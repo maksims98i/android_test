@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,11 +19,18 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Ставит Android cmdline-tools и принимает лицензии
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 34
-          build-tools: 34.0.0
+          cmdline-tools-version: latest
+          accept-android-sdk-licenses: true
+
+      # Ставим нужные платформы и build-tools
+      - name: Install SDK packages
+        run: |
+          yes | sdkmanager --licenses
+          yes | sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Grant execute permission for Gradlew
         run: chmod +x gradlew
