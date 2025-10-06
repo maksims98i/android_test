@@ -43,6 +43,18 @@ jobs:
       - name: Assemble debug APK (already signed with debug keystore)
         run: ./gradlew clean assembleDebug --stacktrace
 
+              - name: Show applicationId from merged manifest (debug)
+        run: |
+          MANIFEST=app/build/intermediates/merged_manifests/debug/AndroidManifest.xml
+          echo ">>> Package line from merged manifest:"
+          grep -o 'package="[^"]\+"' "$MANIFEST" || echo "Manifest not found"
+
+      - name: Upload merged manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-manifest-debug
+          path: app/build/intermediates/merged_manifests/debug/AndroidManifest.xml
+
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
         with:
