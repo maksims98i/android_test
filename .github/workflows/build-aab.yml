@@ -1,4 +1,4 @@
-name: Build legacy APK
+name: Build and Sign Release APK
 
 on:
   workflow_dispatch:
@@ -13,8 +13,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 1) Java 17 только для установки SDK (sdkmanager требует 17)
-      - name: Setup JDK 17 (for sdkmanager)
+      # sdkmanager сейчас требует Java 17
+      - name: Setup JDK 17 for SDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -26,30 +26,98 @@ jobs:
           cmdline-tools-version: latest
           accept-android-sdk-licenses: true
 
-      - name: Install SDK packages (on Java 17)
+      - name: Install SDK packages
         run: |
           yes | sdkmanager --licenses
           yes | sdkmanager \
             "platform-tools" \
             "platforms;android-28" "build-tools;28.0.3" \
             "platforms;android-29" "build-tools;29.0.3" \
-            "platforms;android-30" "build-tools;30.0.3"
+            "platforms;android-30" "build-tools;30.0.3" \
+            "platforms;android-34" "build-tools;34.0.0"
 
-      # 2) Переключаемся на Java 8 для сборки старого проекта
-      - name: Switch to JDK 8 (for Gradle build)
+      # Для сборки старых проектов чаще нужна Java 8/11.
+      # Начинаем с 11 (если упадет — ниже есть вариант переключить на 8).
+      - name: Switch to JDK 11 for Gradle build
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Grant execute to Gradle wrapper
+        run: chmod +x gradlew
+
+      # Если проект соберется на 11 — отлично. Если упадет, автоматически попробуем на 8.
+      - name: Try assembleRelease (JDK 11)
+        id: build11
+        run: ./gradlew clean assembleRelease --stacktrace
+        continue-on-error: true
+
+      - name: Switch to JDK 8 if needed
+        if: steps.build11.outcome == 'failure'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '8'
 
-      - name: Make gradlew executable
-        run: chmod +x gradlew
-
-      - name: Assemble release APK
+      - name: Retry assembleRelease (JDK 8)
+        if: steps.build11.outcome == 'failure'
         run: ./gradlew clean assembleRelease --stacktrace
 
-      - name: Upload APK artifact
+      # === Подпись APK ===
+      - name: Decode keystore from secret
+        run: echo "${{ secrets.SIGNING_KEYSTORE_B64 }}" | base64 -d > siil-release.jks
+
+      # Находим самый свежий build-tools (там лежат zipalign и apksigner)
+      - name: Locate build-tools
+        id: bt
+        run: |
+          ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          LATEST="$(ls -d "$ROOT/build-tools/"* | sort -V | tail -n 1)"
+          echo "root=$ROOT" >> $GITHUB_OUTPUT
+          echo "bt=$LATEST" >> $GITHUB_OUTPUT
+
+      # Определяем пути к APK
+      - name: Detect APK paths
+        id: apk
+        run: |
+          set -e
+          UNSIGNED=$(ls app/build/outputs/apk/release/*-unsigned.apk 2>/dev/null | head -n 1 || true)
+          if [ -z "$UNSIGNED" ]; then
+            # некоторые проекты сразу кладут подписанный release.apk; возьмем первый попавшийся
+            UNSIGNED=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
+          fi
+          echo "unsigned=$UNSIGNED" >> $GITHUB_OUTPUT
+          echo "aligned=${UNSIGNED%-unsigned.apk}-aligned.apk" >> $GITHUB_OUTPUT
+          echo "signed=${UNSIGNED%-unsigned.apk}-signed-aligned.apk" >> $GITHUB_OUTPUT
+          echo "Found unsigned: $UNSIGNED"
+
+      # 1) Выравниваем
+      - name: Zipalign
+        run: |
+          "${{ steps.bt.outputs.bt }}"/zipalign -p -f 4 \
+            "${{ steps.apk.outputs.unsigned }}" \
+            "${{ steps.apk.outputs.aligned }}"
+
+      # 2) Подписываем apksigner (v2/v3)
+      - name: Sign with apksigner
+        run: |
+          "${{ steps.bt.outputs.bt }}"/apksigner sign \
+            --ks siil-release.jks \
+            --ks-pass pass:${{ secrets.SIGNING_STORE_PASSWORD }} \
+            --key-pass pass:${{ secrets.SIGNING_KEY_PASSWORD }} \
+            --out "${{ steps.apk.outputs.signed }}" \
+            "${{ steps.apk.outputs.aligned }}"
+
+      # 3) Проверяем подпись
+      - name: Verify APK signature
+        run: |
+          "${{ steps.bt.outputs.bt }}"/apksigner verify --verbose --print-certs \
+            "${{ steps.apk.outputs.signed }}"
+
+      # Отдаём готовый файл
+      - name: Upload signed APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-apk
-          path: app/build/outputs/apk/release/*.apk
+          name: app-release-signed-apk
+          path: ${{ steps.apk.outputs.signed }}
