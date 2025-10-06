@@ -1,16 +1,5 @@
-buildscript {
-    repositories {
-        jcenter()
-        google()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:4.2.2'
-    }
-}
-
-allprojects {
-    repositories {
-        jcenter()
-        google()
-    }
+defaultConfig {
+    applicationId "com.siil.learning"   // или "ch.siil.learning.internaltest" — что-то уникальное
+    versionCode 2
+    versionName "1.0.1"
 }
